@@ -1,5 +1,8 @@
+CROSS_HOST="x86_64-w64-mingw32"
+inherit cross
+
 NAME="mingw64-x86_64-libffi"
-VERSION=3.0.11
+VERSION=3.0.13
 RELEASE=1
 CATEGORY="Devel"
 SUMMARY="Foreign Function Interface library for Win64 toolchain"
@@ -10,8 +13,6 @@ mingw64-x86_64-gcc cross compiler, and installs into the
 HOMEPAGE="http://sourceware.org/libffi/"
 SRC_URI="ftp://sourceware.org/pub/libffi/libffi-${VERSION}.tar.gz"
 SRC_DIR="libffi-${VERSION}"
-CROSS_HOST="x86_64-w64-mingw32"
-inherit cross
 
 src_install() {
 	cd ${B}
