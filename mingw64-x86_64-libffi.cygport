@@ -2,7 +2,7 @@ CROSS_HOST="x86_64-w64-mingw32"
 inherit cross
 
 NAME="mingw64-x86_64-libffi"
-VERSION=3.0.13
+VERSION=3.2.1
 RELEASE=1
 CATEGORY="Devel"
 SUMMARY="Foreign Function Interface library for Win64 toolchain"
@@ -13,10 +13,12 @@ mingw64-x86_64-gcc cross compiler, and installs into the
 HOMEPAGE="http://sourceware.org/libffi/"
 SRC_URI="ftp://sourceware.org/pub/libffi/libffi-${VERSION}.tar.gz"
 SRC_DIR="libffi-${VERSION}"
+PATCH_URI="http://pkgs.fedoraproject.org/cgit/libffi.git/plain/libffi-3.1-fix-include-path.patch"
 
 src_install() {
 	cd ${B}
 	cyginstall
+	mv ${D}${CROSS_LIBDIR}/libffi-${VERSION}/include/ ${D}${CROSS_PREFIX}/
 	rm -fr ${D}${CROSS_DATADIR}/{info,man}/
 }
 
