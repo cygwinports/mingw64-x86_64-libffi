@@ -1,0 +1,1133 @@
+Squashed backport of commits 99db4d4 5f8881a
+(related commit ebd8276 is just unused code cleanup)
+
+--- origsrc/libffi-3.2.1/Makefile.am	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/Makefile.am	2015-11-17 16:11:03.768599500 -0600
+@@ -37,7 +37,7 @@ EXTRA_DIST = LICENSE ChangeLog.v1 Change
+ 	 src/sh64/sysv.S src/sh64/ffitarget.h src/sparc/v8.S		\
+ 	 src/sparc/v9.S src/sparc/ffitarget.h src/sparc/ffi.c		\
+ 	 src/x86/darwin64.S src/x86/ffi.c src/x86/sysv.S		\
+-	 src/x86/win32.S src/x86/darwin.S src/x86/win64.S		\
++	 src/x86/win32.S src/x86/darwin.S src/x86/ffiw64.c src/x86/win64.S \
+ 	 src/x86/freebsd.S src/x86/ffi64.c src/x86/unix64.S		\
+ 	 src/x86/ffitarget.h src/pa/ffitarget.h src/pa/ffi.c		\
+ 	 src/pa/linux.S src/pa/hpux32.S src/frv/ffi.c src/bfin/ffi.c	\
+@@ -135,7 +135,7 @@ if X86_WIN32
+ nodist_libffi_la_SOURCES += src/x86/ffi.c src/x86/win32.S
+ endif
+ if X86_WIN64
+-nodist_libffi_la_SOURCES += src/x86/ffi.c src/x86/win64.S
++nodist_libffi_la_SOURCES += src/x86/ffiw64.c src/x86/win64.S
+ endif
+ if X86_DARWIN
+ nodist_libffi_la_SOURCES += src/x86/ffi.c src/x86/darwin.S src/x86/ffi64.c src/x86/darwin64.S
+--- origsrc/libffi-3.2.1/src/x86/ffitarget.h	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/src/x86/ffitarget.h	2015-11-17 16:11:03.773100000 -0600
+@@ -126,24 +126,17 @@ typedef enum ffi_abi {
+ #define FFI_TYPE_SMALL_STRUCT_4B (FFI_TYPE_LAST + 3)
+ #define FFI_TYPE_MS_STRUCT       (FFI_TYPE_LAST + 4)
+ 
+-#if defined (X86_64) || (defined (__x86_64__) && defined (X86_DARWIN))
+-#define FFI_TRAMPOLINE_SIZE 24
+-#define FFI_NATIVE_RAW_API 0
++#if defined (X86_64) || defined(X86_WIN64) \
++    || (defined (__x86_64__) && defined (X86_DARWIN))
++# define FFI_TRAMPOLINE_SIZE 24
++# define FFI_NATIVE_RAW_API 0
+ #else
+-#ifdef X86_WIN32
+-#define FFI_TRAMPOLINE_SIZE 52
+-#else
+-#ifdef X86_WIN64
+-#define FFI_TRAMPOLINE_SIZE 29
+-#define FFI_NATIVE_RAW_API 0
+-#define FFI_NO_RAW_API 1
+-#else
+-#define FFI_TRAMPOLINE_SIZE 10
+-#endif
+-#endif
+-#ifndef X86_WIN64
+-#define FFI_NATIVE_RAW_API 1  /* x86 has native raw api support */
+-#endif
++# ifdef X86_WIN32
++#  define FFI_TRAMPOLINE_SIZE 52
++# else
++#  define FFI_TRAMPOLINE_SIZE 10
++# endif
++# define FFI_NATIVE_RAW_API 1  /* x86 has native raw api support */
+ #endif
+ 
+ #endif
+--- origsrc/libffi-3.2.1/src/x86/ffiw64.c	1969-12-31 18:00:00.000000000 -0600
++++ src/libffi-3.2.1/src/x86/ffiw64.c	2015-11-17 16:12:15.326686200 -0600
+@@ -0,0 +1,266 @@
++/* -----------------------------------------------------------------------
++   ffiw64.c - Copyright (c) 2014 Red Hat, Inc.
++
++   x86 win64 Foreign Function Interface
++
++   Permission is hereby granted, free of charge, to any person obtaining
++   a copy of this software and associated documentation files (the
++   ``Software''), to deal in the Software without restriction, including
++   without limitation the rights to use, copy, modify, merge, publish,
++   distribute, sublicense, and/or sell copies of the Software, and to
++   permit persons to whom the Software is furnished to do so, subject to
++   the following conditions:
++
++   The above copyright notice and this permission notice shall be included
++   in all copies or substantial portions of the Software.
++
++   THE SOFTWARE IS PROVIDED ``AS IS'', WITHOUT WARRANTY OF ANY KIND,
++   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++   NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
++   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
++   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++   DEALINGS IN THE SOFTWARE.
++   ----------------------------------------------------------------------- */
++
++#include <ffi.h>
++#include <ffi_common.h>
++#include <stdlib.h>
++#include <stdint.h>
++
++#ifdef X86_WIN64
++
++struct win64_call_frame
++{
++  UINT64 rbp;		/* 0 */
++  UINT64 retaddr;	/* 8 */
++  UINT64 fn;		/* 16 */
++  UINT64 flags;		/* 24 */
++  UINT64 rvalue;	/* 32 */
++};
++
++extern void ffi_call_win64 (void *stack, struct win64_call_frame *,
++			    void *closure) FFI_HIDDEN;
++
++ffi_status
++ffi_prep_cif_machdep (ffi_cif *cif)
++{
++  int flags, n;
++
++  if (cif->abi != FFI_WIN64)
++    return FFI_BAD_ABI;
++
++  flags = cif->rtype->type;
++  switch (flags)
++    {
++    default:
++      break;
++    case FFI_TYPE_LONGDOUBLE:
++      flags = FFI_TYPE_STRUCT;
++      break;
++    case FFI_TYPE_COMPLEX:
++      flags = FFI_TYPE_STRUCT;
++      /* FALLTHRU */
++    case FFI_TYPE_STRUCT:
++      switch (cif->rtype->size)
++	{
++	case 8:
++	  flags = FFI_TYPE_UINT64;
++	  break;
++	case 4:
++	  flags = FFI_TYPE_SMALL_STRUCT_4B;
++	  break;
++	case 2:
++	  flags = FFI_TYPE_SMALL_STRUCT_2B;
++	  break;
++	case 1:
++	  flags = FFI_TYPE_SMALL_STRUCT_1B;
++	  break;
++	}
++      break;
++    }
++  cif->flags = flags;
++
++  /* Each argument either fits in a register, an 8 byte slot, or is
++     passed by reference with the pointer in the 8 byte slot.  */
++  n = cif->nargs;
++  n += (flags == FFI_TYPE_STRUCT);
++  if (n < 4)
++    n = 4;
++  cif->bytes = n * 8;
++
++  return FFI_OK;
++}
++
++static void
++ffi_call_int (ffi_cif *cif, void (*fn)(void), void *rvalue,
++	      void **avalue, void *closure)
++{
++  int i, j, n, flags;
++  UINT64 *stack;
++  size_t rsize;
++  struct win64_call_frame *frame;
++
++  FFI_ASSERT(cif->abi == FFI_WIN64);
++
++  flags = cif->flags;
++  rsize = 0;
++
++  /* If we have no return value for a structure, we need to create one.
++     Otherwise we can ignore the return type entirely.  */
++  if (rvalue == NULL)
++    {
++      if (flags == FFI_TYPE_STRUCT)
++	rsize = cif->rtype->size;
++      else
++	flags = FFI_TYPE_VOID;
++    }
++
++  stack = alloca(cif->bytes + sizeof(struct win64_call_frame) + rsize);
++  frame = (struct win64_call_frame *)((char *)stack + cif->bytes);
++  if (rsize)
++    rvalue = frame + 1;
++
++  frame->fn = (uintptr_t)fn;
++  frame->flags = flags;
++  frame->rvalue = (uintptr_t)rvalue;
++
++  j = 0;
++  if (flags == FFI_TYPE_STRUCT)
++    {
++      stack[0] = (uintptr_t)rvalue;
++      j = 1;
++    }
++
++  for (i = 0, n = cif->nargs; i < n; ++i, ++j)
++    {
++      switch (cif->arg_types[i]->size)
++	{
++	case 8:
++	  stack[j] = *(UINT64 *)avalue[i];
++	  break;
++	case 4:
++	  stack[j] = *(UINT32 *)avalue[i];
++	  break;
++	case 2:
++	  stack[j] = *(UINT16 *)avalue[i];
++	  break;
++	case 1:
++	  stack[j] = *(UINT8 *)avalue[i];
++	  break;
++	default:
++	  stack[j] = (uintptr_t)avalue[i];
++	  break;
++	}
++    }
++
++  ffi_call_win64 (stack, frame, closure);
++}
++
++void
++ffi_call (ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
++{
++  ffi_call_int (cif, fn, rvalue, avalue, NULL);
++}
++
++void
++ffi_call_go (ffi_cif *cif, void (*fn)(void), void *rvalue,
++	     void **avalue, void *closure)
++{
++  ffi_call_int (cif, fn, rvalue, avalue, closure);
++}
++
++
++extern void ffi_closure_win64(void) FFI_HIDDEN;
++
++ffi_status
++ffi_prep_closure_loc (ffi_closure* closure,
++		      ffi_cif* cif,
++		      void (*fun)(ffi_cif*, void*, void**, void*),
++		      void *user_data,
++		      void *codeloc)
++{
++  static const unsigned char trampoline[16] = {
++    /* leaq  -0x7(%rip),%r10   # 0x0  */
++    0x4c, 0x8d, 0x15, 0xf9, 0xff, 0xff, 0xff,
++    /* jmpq  *0x3(%rip)        # 0x10 */
++    0xff, 0x25, 0x03, 0x00, 0x00, 0x00,
++    /* nopl  (%rax) */
++    0x0f, 0x1f, 0x00
++  };
++  unsigned char *tramp = closure->tramp;
++
++  if (cif->abi != FFI_WIN64)
++    return FFI_BAD_ABI;
++
++  memcpy (tramp, trampoline, sizeof(trampoline));
++  *(UINT64 *)(tramp + 16) = (uintptr_t)ffi_closure_win64;
++
++  closure->cif = cif;
++  closure->fun = fun;
++  closure->user_data = user_data;
++
++  return FFI_OK;
++}
++
++struct win64_closure_frame
++{
++  UINT64 rvalue[2];
++  UINT64 fargs[4];
++  UINT64 retaddr;
++  UINT64 args[];
++};
++
++int FFI_HIDDEN
++ffi_closure_win64_inner(ffi_cif *cif,
++			void (*fun)(ffi_cif*, void*, void**, void*),
++			void *user_data,
++			struct win64_closure_frame *frame)
++{
++  void **avalue;
++  void *rvalue;
++  int i, n, nreg, flags;
++
++  avalue = alloca(cif->nargs * sizeof(void *));
++  rvalue = frame->rvalue;
++  nreg = 0;
++
++  /* When returning a structure, the address is in the first argument.
++     We must also be prepared to return the same address in eax, so
++     install that address in the frame and pretend we return a pointer.  */
++  flags = cif->flags;
++  if (flags == FFI_TYPE_STRUCT)
++    {
++      rvalue = (void *)(uintptr_t)frame->args[0];
++      frame->rvalue[0] = frame->args[0];
++      nreg = 1;
++    }
++
++  for (i = 0, n = cif->nargs; i < n; ++i, ++nreg)
++    {
++      size_t size = cif->arg_types[i]->size;
++      size_t type = cif->arg_types[i]->type;
++      void *a;
++
++      if (type == FFI_TYPE_DOUBLE || type == FFI_TYPE_FLOAT)
++	{
++	  if (nreg < 4)
++	    a = &frame->fargs[nreg];
++	  else
++	    a = &frame->args[nreg];
++	}
++      else if (size == 1 || size == 2 || size == 4 || size == 8)
++	a = &frame->args[nreg];
++      else
++	a = (void *)(uintptr_t)frame->args[nreg];
++
++      avalue[i] = a;
++    }
++
++  /* Invoke the closure.  */
++  fun (cif, rvalue, avalue, user_data);
++  return flags;
++}
++
++#endif /* X86_WIN64 */
+--- origsrc/libffi-3.2.1/src/x86/win64.S	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/src/x86/win64.S	2015-11-17 16:11:03.781101100 -0600
+@@ -2,263 +2,14 @@
+ #include <fficonfig.h>
+ #include <ffi.h>
+ 
+-/* Constants for ffi_call_win64 */
+-#define STACK 0
+-#define PREP_ARGS_FN 32
+-#define ECIF 40
+-#define CIF_BYTES 48
+-#define CIF_FLAGS 56
+-#define RVALUE 64
+-#define FN 72
+-
+-/* ffi_call_win64 (void (*prep_args_fn)(char *, extended_cif *),
+-		   extended_cif *ecif, unsigned bytes, unsigned flags,
+-		   unsigned *rvalue, void (*fn)());
+- */
+-
+-#ifdef _MSC_VER
+-PUBLIC	ffi_call_win64
+-
+-EXTRN	__chkstk:NEAR
+-EXTRN	ffi_closure_win64_inner:NEAR
+-
+-_TEXT	SEGMENT
+-
+-;;; ffi_closure_win64 will be called with these registers set:
+-;;;    rax points to 'closure'
+-;;;    r11 contains a bit mask that specifies which of the
+-;;;    first four parameters are float or double
+-;;;
+-;;; It must move the parameters passed in registers to their stack location,
+-;;; call ffi_closure_win64_inner for the actual work, then return the result.
+-;;;
+-ffi_closure_win64 PROC FRAME
+-	;; copy register arguments onto stack
+-	test	r11, 1
+-	jne	first_is_float
+-	mov	QWORD PTR [rsp+8], rcx
+-	jmp	second
+-first_is_float:
+-	movlpd	QWORD PTR [rsp+8], xmm0
+-
+-second:
+-	test	r11, 2
+-	jne	second_is_float
+-	mov	QWORD PTR [rsp+16], rdx
+-	jmp	third
+-second_is_float:
+-	movlpd	QWORD PTR [rsp+16], xmm1
+-
+-third:
+-	test	r11, 4
+-	jne	third_is_float
+-	mov	QWORD PTR [rsp+24], r8
+-	jmp	fourth
+-third_is_float:
+-	movlpd	QWORD PTR [rsp+24], xmm2
+-
+-fourth:
+-	test	r11, 8
+-	jne	fourth_is_float
+-	mov	QWORD PTR [rsp+32], r9
+-	jmp	done
+-fourth_is_float:
+-	movlpd	QWORD PTR [rsp+32], xmm3
+-
+-done:
+-	.ALLOCSTACK 40
+-	sub	rsp, 40
+-	.ENDPROLOG
+-	mov	rcx, rax	; context is first parameter
+-	mov	rdx, rsp	; stack is second parameter
+-	add	rdx, 48		; point to start of arguments
+-	mov	rax, ffi_closure_win64_inner
+-	call	rax		; call the real closure function
+-	add	rsp, 40
+-	movd	xmm0, rax	; If the closure returned a float,
+-				; ffi_closure_win64_inner wrote it to rax
+-	ret	0
+-ffi_closure_win64 ENDP
+-
+-ffi_call_win64 PROC FRAME
+-	;; copy registers onto stack
+-	mov	QWORD PTR [rsp+32], r9
+-	mov	QWORD PTR [rsp+24], r8
+-	mov	QWORD PTR [rsp+16], rdx
+-	mov	QWORD PTR [rsp+8], rcx
+-	.PUSHREG rbp
+-	push	rbp
+-	.ALLOCSTACK 48
+-	sub	rsp, 48					; 00000030H
+-	.SETFRAME rbp, 32
+-	lea	rbp, QWORD PTR [rsp+32]
+-	.ENDPROLOG
+-
+-	mov	eax, DWORD PTR CIF_BYTES[rbp]
+-	add	rax, 15
+-	and	rax, -16
+-	call	__chkstk
+-	sub	rsp, rax
+-	lea	rax, QWORD PTR [rsp+32]
+-	mov	QWORD PTR STACK[rbp], rax
+-
+-	mov	rdx, QWORD PTR ECIF[rbp]
+-	mov	rcx, QWORD PTR STACK[rbp]
+-	call	QWORD PTR PREP_ARGS_FN[rbp]
+-
+-	mov	rsp, QWORD PTR STACK[rbp]
+-
+-	movlpd	xmm3, QWORD PTR [rsp+24]
+-	movd	r9, xmm3
+-
+-	movlpd	xmm2, QWORD PTR [rsp+16]
+-	movd	r8, xmm2
+-
+-	movlpd	xmm1, QWORD PTR [rsp+8]
+-	movd	rdx, xmm1
+-
+-	movlpd	xmm0, QWORD PTR [rsp]
+-	movd	rcx, xmm0
+-
+-	call	QWORD PTR FN[rbp]
+-ret_struct4b$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SMALL_STRUCT_4B
+- 	jne	ret_struct2b$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	mov	DWORD PTR [rcx], eax
+-	jmp	ret_void$
+-
+-ret_struct2b$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SMALL_STRUCT_2B
+- 	jne	ret_struct1b$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	mov	WORD PTR [rcx], ax
+-	jmp	ret_void$
+-
+-ret_struct1b$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SMALL_STRUCT_1B
+- 	jne	ret_uint8$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	mov	BYTE PTR [rcx], al
+-	jmp	ret_void$
+-
+-ret_uint8$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_UINT8
+- 	jne	ret_sint8$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	movzx   rax, al
+-	mov	QWORD PTR [rcx], rax
+-	jmp	ret_void$
+-
+-ret_sint8$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SINT8
+- 	jne	ret_uint16$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	movsx   rax, al
+-	mov	QWORD PTR [rcx], rax
+-	jmp	ret_void$
+-
+-ret_uint16$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_UINT16
+- 	jne	ret_sint16$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	movzx   rax, ax
+-	mov	QWORD PTR [rcx], rax
+-	jmp	SHORT ret_void$
+-
+-ret_sint16$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SINT16
+- 	jne	ret_uint32$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	movsx   rax, ax
+-	mov	QWORD PTR [rcx], rax
+-	jmp	SHORT ret_void$
+-
+-ret_uint32$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_UINT32
+- 	jne	ret_sint32$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	mov     eax, eax
+-	mov	QWORD PTR [rcx], rax
+-	jmp	SHORT ret_void$
+-
+-ret_sint32$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SINT32
+- 	jne	ret_float$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	cdqe
+-	mov	QWORD PTR [rcx], rax
+-	jmp	SHORT ret_void$
+-
+-ret_float$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_FLOAT
+- 	jne	SHORT ret_double$
+-
+- 	mov	rax, QWORD PTR RVALUE[rbp]
+- 	movss	DWORD PTR [rax], xmm0
+- 	jmp	SHORT ret_void$
+-
+-ret_double$:
+- 	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_DOUBLE
+- 	jne	SHORT ret_uint64$
+-
+- 	mov	rax, QWORD PTR RVALUE[rbp]
+- 	movlpd	QWORD PTR [rax], xmm0
+- 	jmp	SHORT ret_void$
+-
+-ret_uint64$:
+-  	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_UINT64
+-  	jne	SHORT ret_sint64$
+-
+- 	mov	rcx, QWORD PTR RVALUE[rbp]
+- 	mov	QWORD PTR [rcx], rax
+- 	jmp	SHORT ret_void$
+-
+-ret_sint64$:
+-  	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_SINT64
+-  	jne	SHORT ret_pointer$
+-
+- 	mov	rcx, QWORD PTR RVALUE[rbp]
+- 	mov	QWORD PTR [rcx], rax
+- 	jmp	SHORT ret_void$
+-
+-ret_pointer$:
+-  	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_POINTER
+-  	jne	SHORT ret_int$
+-
+- 	mov	rcx, QWORD PTR RVALUE[rbp]
+- 	mov	QWORD PTR [rcx], rax
+- 	jmp	SHORT ret_void$
+-
+-ret_int$:
+-  	cmp	DWORD PTR CIF_FLAGS[rbp], FFI_TYPE_INT
+-  	jne	SHORT ret_void$
+-
+-	mov	rcx, QWORD PTR RVALUE[rbp]
+-	cdqe
+-	mov	QWORD PTR [rcx], rax
+- 	jmp	SHORT ret_void$
+-
+-ret_void$:
+-	xor	rax, rax
+-
+-	lea	rsp, QWORD PTR [rbp+16]
+-	pop	rbp
+-	ret	0
+-ffi_call_win64 ENDP
+-_TEXT	ENDS
+-END
++#if defined(HAVE_AS_CFI_PSEUDO_OP)
++        .cfi_sections   .debug_frame
++#endif
+ 
+-#else
++#define arg0	%rcx
++#define arg1	%rdx
++#define arg2	%r8
++#define arg3	%r9
+ 
+ #ifdef SYMBOL_UNDERSCORE
+ #define SYMBOL_NAME(name) _##name
+@@ -266,255 +17,183 @@ END
+ #define SYMBOL_NAME(name) name
+ #endif
+ 
+-.text
++.macro E which
++	.align	8
++	.org	0b + \which * 8
++.endm
++
++	.text
++
++/* ffi_call_win64 (void *stack, struct win64_call_frame *frame, void *r10)
++
++   Bit o trickiness here -- FRAME is the base of the stack frame
++   for this function.  This has been allocated by ffi_call.  We also
++   deallocate some of the stack that has been alloca'd.  */
++
++	.align	8
++	.globl	ffi_call_win64
++
++	.seh_proc ffi_call_win64
++ffi_call_win64:
++	.cfi_startproc
++	/* Set up the local stack frame and install it in rbp/rsp.  */
++	movq	(%rsp), %rax
++	movq	%rbp, (arg1)
++	movq	%rax, 8(arg1)
++	movq	arg1, %rbp
++	.cfi_def_cfa %rbp, 16
++	.cfi_rel_offset %rbp, 0
++	.seh_pushreg %rbp
++	.seh_setframe %rbp, 0
++	.seh_endprologue
++	movq	arg0, %rsp
+ 
+-.extern SYMBOL_NAME(ffi_closure_win64_inner)
++	movq	arg2, %r10
+ 
+-# ffi_closure_win64 will be called with these registers set:
+-#    rax points to 'closure'
+-#    r11 contains a bit mask that specifies which of the
+-#    first four parameters are float or double
+-#
+-# It must move the parameters passed in registers to their stack location,
+-# call ffi_closure_win64_inner for the actual work, then return the result.
+-#
+-	.balign 16
+-	.globl SYMBOL_NAME(ffi_closure_win64)
+-	.seh_proc SYMBOL_NAME(ffi_closure_win64)
+-SYMBOL_NAME(ffi_closure_win64):
+-	# copy register arguments onto stack
+-	test	$1,%r11
+-	jne	.Lfirst_is_float
+-	mov	%rcx, 8(%rsp)
+-	jmp	.Lsecond
+-.Lfirst_is_float:
+-	movlpd	%xmm0, 8(%rsp)
+-
+-.Lsecond:
+-	test	$2, %r11
+-	jne	.Lsecond_is_float
+-	mov	%rdx, 16(%rsp)
+-	jmp	.Lthird
+-.Lsecond_is_float:
+-	movlpd	%xmm1, 16(%rsp)
+-
+-.Lthird:
+-	test	$4, %r11
+-	jne	.Lthird_is_float
+-	mov	%r8,24(%rsp)
+-	jmp	.Lfourth
+-.Lthird_is_float:
+-	movlpd	%xmm2, 24(%rsp)
+-
+-.Lfourth:
+-	test	$8, %r11
+-	jne	.Lfourth_is_float
+-	mov	%r9, 32(%rsp)
+-	jmp	.Ldone
+-.Lfourth_is_float:
+-	movlpd	%xmm3, 32(%rsp)
+-
+-.Ldone:
+-	.seh_stackalloc 40
+-	sub	$40, %rsp
+-	.seh_endprologue
+-	mov	%rax, %rcx	# context is first parameter
+-	mov	%rsp, %rdx	# stack is second parameter
+-	add	$48, %rdx	# point to start of arguments
+-	leaq	SYMBOL_NAME(ffi_closure_win64_inner)(%rip), %rax
+-	callq	*%rax		# call the real closure function
+-	add	$40, %rsp
+-	movq	%rax, %xmm0	# If the closure returned a float,
+-				# ffi_closure_win64_inner wrote it to rax
+-	retq
++	/* Load all slots into both general and xmm registers.  */
++	movq	(%rsp), %rcx
++	movsd	(%rsp), %xmm0
++	movq	8(%rsp), %rdx
++	movsd	8(%rsp), %xmm1
++	movq	16(%rsp), %r8
++	movsd	16(%rsp), %xmm2
++	movq	24(%rsp), %r9
++	movsd	24(%rsp), %xmm3
++
++	call	*16(%rbp)
++
++	movl	24(%rbp), %ecx
++	movq	32(%rbp), %r8
++	leaq	0f(%rip), %r10
++	cmpl	$FFI_TYPE_SMALL_STRUCT_4B, %ecx
++	leaq	(%r10, %rcx, 8), %r10
++	ja	99f
++	jmp	*%r10
++
++/* Below, we're space constrained most of the time.  Thus we eschew the
++   modern "mov, pop, ret" sequence (5 bytes) for "leave, ret" (2 bytes).  */
++.macro epilogue
++	leaveq
++	.cfi_remember_state
++	.cfi_def_cfa %rsp, 8
++	.cfi_restore %rbp
++	ret
++	.cfi_restore_state
++.endm
++
++	.align	8
++0:
++E FFI_TYPE_VOID
++	epilogue
++E FFI_TYPE_INT
++	movslq	%eax, %rax
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_FLOAT
++	movss	%xmm0, (%r8)
++	epilogue
++E FFI_TYPE_DOUBLE
++	movsd	%xmm0, (%r8)
++	epilogue
++E FFI_TYPE_LONGDOUBLE
++	call	abort
++E FFI_TYPE_UINT8
++	movzbl	%al, %eax
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_SINT8
++	movsbq	%al, %rax
++	jmp	98f
++E FFI_TYPE_UINT16
++	movzwl	%ax, %eax
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_SINT16
++	movswq	%ax, %rax
++	jmp	98f
++E FFI_TYPE_UINT32
++	movl	%eax, %eax
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_SINT32
++	movslq	%eax, %rax
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_UINT64
++98:	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_SINT64
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_STRUCT
++	epilogue
++E FFI_TYPE_POINTER
++	movq	%rax, (%r8)
++	epilogue
++E FFI_TYPE_COMPLEX
++	call	abort
++E FFI_TYPE_SMALL_STRUCT_1B
++	movb	%al, (%r8)
++	epilogue
++E FFI_TYPE_SMALL_STRUCT_2B
++	movw	%ax, (%r8)
++	epilogue
++E FFI_TYPE_SMALL_STRUCT_4B
++	movl	%eax, (%r8)
++	epilogue
++
++	.align	8
++99:	call	abort
++
++.purgem epilogue
++
++	.cfi_endproc
+ 	.seh_endproc
+ 
+-	.balign 16
+-	.globl	SYMBOL_NAME(ffi_call_win64)
+-	.seh_proc SYMBOL_NAME(ffi_call_win64)
+-SYMBOL_NAME(ffi_call_win64):
+-	# copy registers onto stack
+-	mov	%r9,32(%rsp)
+-	mov	%r8,24(%rsp)
+-	mov	%rdx,16(%rsp)
+-	mov	%rcx,8(%rsp)
+-	.seh_pushreg rbp
+-	push	%rbp
+-	.seh_stackalloc 48
+-	sub	$48,%rsp
+-	.seh_setframe rbp, 32
+-	lea	32(%rsp),%rbp
++
++/* 32 bytes of outgoing register stack space, 8 bytes of alignment,
++   16 bytes of result, 32 bytes of xmm registers.  */
++#define ffi_clo_FS	(32+8+16+32)
++#define ffi_clo_OFF_R	(32+8)
++#define ffi_clo_OFF_X	(32+8+16)
++
++	.align	8
++	.globl	ffi_closure_win64
++
++	.seh_proc ffi_closure_win64
++ffi_closure_win64:
++	.cfi_startproc
++	/* Save all integer arguments into the incoming reg stack space.  */
++	movq	arg0, 8(%rsp)
++	movq	arg1, 16(%rsp)
++	movq	arg2, 24(%rsp)
++	movq	arg3, 32(%rsp)
++
++	movq	FFI_TRAMPOLINE_SIZE(%r10), arg0		/* load cif */
++	movq	FFI_TRAMPOLINE_SIZE+8(%r10), arg1	/* load fun */
++	movq	FFI_TRAMPOLINE_SIZE+16(%r10), arg2	/* load user_data */
++0:
++	subq	$ffi_clo_FS, %rsp
++	.cfi_adjust_cfa_offset ffi_clo_FS
++	.seh_stackalloc ffi_clo_FS
+ 	.seh_endprologue
+ 
+-	mov	CIF_BYTES(%rbp),%eax
+-	add	$15, %rax
+-	and	$-16, %rax
+-	cmpq	$0x1000, %rax
+-	jb	Lch_done
+-Lch_probe:
+-	subq	$0x1000,%rsp
+-	orl	$0x0, (%rsp)
+-	subq	$0x1000,%rax
+-	cmpq	$0x1000,%rax
+-	ja	Lch_probe
+-Lch_done:
+-	subq	%rax, %rsp
+-	orl	$0x0, (%rsp)
+-	lea	32(%rsp), %rax
+-	mov	%rax, STACK(%rbp)
+-
+-	mov	ECIF(%rbp), %rdx
+-	mov	STACK(%rbp), %rcx
+-	callq	*PREP_ARGS_FN(%rbp)
+-
+-	mov	STACK(%rbp), %rsp
+-
+-	movlpd	24(%rsp), %xmm3
+-	movd	%xmm3, %r9
+-
+-	movlpd	16(%rsp), %xmm2
+-	movd	%xmm2, %r8
+-
+-	movlpd	8(%rsp), %xmm1
+-	movd	%xmm1, %rdx
+-
+-	movlpd	(%rsp), %xmm0
+-	movd	%xmm0, %rcx
+-
+-	callq	*FN(%rbp)
+-.Lret_struct4b:
+- 	cmpl	$FFI_TYPE_SMALL_STRUCT_4B, CIF_FLAGS(%rbp)
+- 	jne .Lret_struct2b
+-
+-	mov	RVALUE(%rbp), %rcx
+-	mov	%eax, (%rcx)
+-	jmp	.Lret_void
+-
+-.Lret_struct2b:
+-	cmpl	$FFI_TYPE_SMALL_STRUCT_2B, CIF_FLAGS(%rbp)
+-	jne .Lret_struct1b
+-
+-	mov	RVALUE(%rbp), %rcx
+-	mov	%ax, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_struct1b:
+-	cmpl	$FFI_TYPE_SMALL_STRUCT_1B, CIF_FLAGS(%rbp)
+-	jne .Lret_uint8
+-
+-	mov	RVALUE(%rbp), %rcx
+-	mov	%al, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_uint8:
+-	cmpl	$FFI_TYPE_UINT8, CIF_FLAGS(%rbp)
+-	jne .Lret_sint8
+-
+-	mov     RVALUE(%rbp), %rcx
+-	movzbq  %al, %rax
+-	movq    %rax, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_sint8:
+-	cmpl	$FFI_TYPE_SINT8, CIF_FLAGS(%rbp)
+-	jne .Lret_uint16
+-
+-	mov     RVALUE(%rbp), %rcx
+-	movsbq  %al, %rax
+-	movq    %rax, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_uint16:
+-	cmpl	$FFI_TYPE_UINT16, CIF_FLAGS(%rbp)
+-	jne .Lret_sint16
+-
+-	mov     RVALUE(%rbp), %rcx
+-	movzwq  %ax, %rax
+-	movq    %rax, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_sint16:
+-	cmpl	$FFI_TYPE_SINT16, CIF_FLAGS(%rbp)
+-	jne .Lret_uint32
+-
+-	mov     RVALUE(%rbp), %rcx
+-	movswq  %ax, %rax
+-	movq    %rax, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_uint32:
+-	cmpl	$FFI_TYPE_UINT32, CIF_FLAGS(%rbp)
+-	jne .Lret_sint32
+-
+-	mov     RVALUE(%rbp), %rcx
+-	movl    %eax, %eax
+-	movq    %rax, (%rcx)
+-	jmp .Lret_void
+-
+-.Lret_sint32:
+- 	cmpl	$FFI_TYPE_SINT32, CIF_FLAGS(%rbp)
+- 	jne	.Lret_float
+-
+-	mov	RVALUE(%rbp), %rcx
+-	cltq
+-	movq	%rax, (%rcx)
+-	jmp	.Lret_void
+-
+-.Lret_float:
+- 	cmpl	$FFI_TYPE_FLOAT, CIF_FLAGS(%rbp)
+- 	jne	.Lret_double
+-
+- 	mov	RVALUE(%rbp), %rax
+- 	movss	%xmm0, (%rax)
+- 	jmp	.Lret_void
+-
+-.Lret_double:
+- 	cmpl	$FFI_TYPE_DOUBLE, CIF_FLAGS(%rbp)
+- 	jne	.Lret_uint64
+-
+- 	mov	RVALUE(%rbp), %rax
+- 	movlpd	%xmm0, (%rax)
+- 	jmp	.Lret_void
+-
+-.Lret_uint64:
+-  	cmpl	$FFI_TYPE_UINT64, CIF_FLAGS(%rbp)
+- 	jne	.Lret_sint64
+-
+- 	mov	RVALUE(%rbp), %rcx
+- 	mov	%rax, (%rcx)
+- 	jmp	.Lret_void
+-
+-.Lret_sint64:
+-  	cmpl	$FFI_TYPE_SINT64, CIF_FLAGS(%rbp)
+-  	jne	.Lret_pointer
+-
+- 	mov	RVALUE(%rbp), %rcx
+- 	mov	%rax, (%rcx)
+- 	jmp	.Lret_void
+-
+-.Lret_pointer:
+-  	cmpl	$FFI_TYPE_POINTER, CIF_FLAGS(%rbp)
+-  	jne	.Lret_int
+-
+- 	mov	RVALUE(%rbp), %rcx
+- 	mov	%rax, (%rcx)
+- 	jmp	.Lret_void
+-
+-.Lret_int:
+-  	cmpl	$FFI_TYPE_INT, CIF_FLAGS(%rbp)
+-  	jne	.Lret_void
+-
+-	mov	RVALUE(%rbp), %rcx
+-	cltq
+-	movq	%rax, (%rcx)
+-	jmp	.Lret_void
+-
+-.Lret_void:
+-	xor	%rax, %rax
+-
+-	lea	16(%rbp), %rsp
+-	pop	%rbp
+-	retq
+-	.seh_endproc
+-#endif /* !_MSC_VER */
++	/* Save all sse arguments into the stack frame.  */
++	movsd	%xmm0, ffi_clo_OFF_X(%rsp)
++	movsd	%xmm1, ffi_clo_OFF_X+8(%rsp)
++	movsd	%xmm2, ffi_clo_OFF_X+16(%rsp)
++	movsd	%xmm3, ffi_clo_OFF_X+24(%rsp)
++
++	leaq	ffi_clo_OFF_R(%rsp), arg3
++	call	ffi_closure_win64_inner
++
++	/* Load the result into both possible result registers.  */
++	movq    ffi_clo_OFF_R(%rsp), %rax
++	movsd   ffi_clo_OFF_R(%rsp), %xmm0
++
++	addq	$ffi_clo_FS, %rsp
++	.cfi_adjust_cfa_offset -ffi_clo_FS
++	ret
+ 
++	.cfi_endproc
++	.seh_endproc
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/call.exp	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/call.exp	2015-11-17 16:11:03.785101600 -0600
+@@ -24,16 +24,15 @@ set ctlist [lsearch -inline -all -glob [
+ 
+ run-many-tests $tlist ""
+ 
+-if { ![istarget s390*] } {
+-
++# ??? We really should preprocess ffi.h and grep
++# for FFI_TARGET_HAS_COMPLEX_TYPE.
++if { [istarget s390*]
++     || [istarget x86_64*] } {
++  run-many-tests $ctlist ""
++} else {
+     foreach test $ctlist {
+ 	unsupported "$test"
+     }
+-
+-} else {
+-
+-  run-many-tests $ctlist ""
+-
+ }
+ 
+ dg-finish
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/cls_align_longdouble_split.c	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/cls_align_longdouble_split.c	2015-11-17 16:11:03.788602000 -0600
+@@ -4,10 +4,8 @@
+    PR:		none.
+    Originator:	<hos@tamanegi.org> 20031203	 */
+ 
+-/* { dg-excess-errors "no long double format" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ /* { dg-do run { xfail strongarm*-*-* xscale*-*-* } } */
+ /* { dg-options -mlong-double-128 { target powerpc64*-*-linux* } } */
+-/* { dg-output "" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ 
+ #include "ffitest.h"
+ 
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/cls_align_longdouble_split2.c	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/cls_align_longdouble_split2.c	2015-11-17 16:11:03.791102300 -0600
+@@ -5,10 +5,8 @@
+ 	Originator:		Blake Chaffin	6/18/2007
+ */
+ 
+-/* { dg-excess-errors "no long double format" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ /* { dg-do run { xfail strongarm*-*-* } } */
+ /* { dg-options -mlong-double-128 { target powerpc64*-*-linux* } } */
+-/* { dg-output "" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ 
+ #include "ffitest.h"
+ 
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/cls_longdouble.c	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/cls_longdouble.c	2015-11-17 16:11:03.793602600 -0600
+@@ -4,12 +4,10 @@
+    PR:			none.
+    Originator:	Blake Chaffin	*/
+ 
+-/* { dg-excess-errors "no long double format" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ /* This test is known to PASS on armv7l-unknown-linux-gnueabihf, so I have
+    remove the xfail for arm*-*-* below, until we know more.  */
+ /* { dg-do run { xfail strongarm*-*-* xscale*-*-* } } */
+ /* { dg-options -mlong-double-128 { target powerpc64*-*-linux* } } */
+-/* { dg-output "" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ 
+ #include "ffitest.h"
+ 
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/float2.c	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/float2.c	2015-11-17 16:11:03.796103000 -0600
+@@ -4,9 +4,6 @@
+    PR:		none.
+    Originator:	From the original ffitest.c  */
+ 
+-/* { dg-excess-errors "fails" { target x86_64-*-mingw* x86_64-*-cygwin* } } */
+-/* { dg-do run { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+-
+ #include "ffitest.h"
+ #include "float.h"
+ 
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/huge_struct.c	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/huge_struct.c	2015-11-17 16:11:03.798103200 -0600
+@@ -5,11 +5,9 @@
+ 	Originator:		Blake Chaffin	6/18/2007
+ */
+ 
+-/* { dg-excess-errors "" { target x86_64-*-mingw* x86_64-*-cygwin* } } */
+ /* { dg-do run { xfail strongarm*-*-* xscale*-*-* } } */
+ /* { dg-options -mlong-double-128 { target powerpc64*-*-linux* } } */
+ /* { dg-options -Wformat=0 { target moxie*-*-elf } } */
+-/* { dg-output "" { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ 
+ #include "ffitest.h"
+ 
+--- origsrc/libffi-3.2.1/testsuite/libffi.call/return_ldl.c	2014-11-08 06:47:24.000000000 -0600
++++ src/libffi-3.2.1/testsuite/libffi.call/return_ldl.c	2015-11-17 16:11:03.800603500 -0600
+@@ -4,7 +4,6 @@
+    PR:		none.
+    Originator:	<andreast@gcc.gnu.org> 20071113  */
+ 
+-/* { dg-do run { xfail x86_64-*-mingw* x86_64-*-cygwin* } } */
+ #include "ffitest.h"
+ 
+ static long double return_ldl(long double ldl)
